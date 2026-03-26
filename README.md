@@ -10,7 +10,7 @@ Stop juggling spreadsheets and ChatGPT tabs. Add a job, paste the description, a
 
 You track your job applications on a Kanban board. For each job, the AI can:
 
-- **Tailor your resume** — rewrites your base resume to match the job description, with ATS-optimized keywords and formatting
+- **Tailor your resume** — rewrites your base resume to match the job description, ATS-optimized, and exports as a DOCX preserving your original formatting
 - **Write a cover letter** — generates a compelling, personalized cover letter in a proven 4-paragraph structure
 - **Analyze your fit** — scores your match out of 10, surfaces your top strengths, and flags gaps with actionable fixes
 - **Prep you for interviews** — generates 5 likely questions with STAR-framework answer guides
@@ -22,12 +22,12 @@ All from one place. No copy-pasting between tools.
 
 ## How It Works
 
-1. **Add your base resume** once — the AI never modifies your original
+1. **Upload your base resume** (.docx or plain text) — the AI never modifies your original
 2. **Add job applications** with the company, role, and job description
 3. **Click any AI action** on a job card — get tailored output in seconds
-4. **Copy the result** and use it directly
+4. **Copy the result** or **download as DOCX** with your original formatting preserved
 
-Your data is stored in Supabase (free tier), so it persists across sessions and devices.
+Your data is stored in Supabase (free tier), so it persists across sessions and devices. AI responses are cached per job — click again and it loads instantly without burning another API call.
 
 ---
 
@@ -84,11 +84,15 @@ npm run dev
 - **Kanban board** — drag-free, click-to-move status management (Wishlist → Applied → Phone Screen → Interview → Offer → Rejected)
 - **List view** — filterable flat list for quick scanning
 - **AI-powered actions** — 5 one-click AI tools per job application
-- **Resume vault** — paste your base resume once, get unlimited tailored versions
+- **DOCX resume upload** — upload your .docx, get tailored resumes back in the same format (fonts, margins, bullet styles preserved)
+- **Resume versioning** — every save creates a timestamped version, switch between them anytime, delete old ones
+- **AI response caching** — results stored per job in Supabase, instant reload on subsequent clicks, regenerate when needed
+- **ATS-optimized output** — prompts engineered for keyword mirroring, standard headings, and human-like tone
 - **Copy to clipboard** — one click to copy any AI output
+- **Download DOCX** — one click to download a tailored resume as a .docx file
 - **Provider toggle** — switch between Claude and Ollama mid-session
 - **Auto model pull** — Ollama models download automatically on first use
-- **Persistent storage** — Supabase-backed, works across devices
+- **Persistent storage** — Supabase-backed (PostgreSQL + Storage), works across devices
 - **Dark theme** — easy on the eyes during late-night application sessions
 - **Zero dependencies on external UI libraries** — pure React, fast and lightweight
 
@@ -99,9 +103,10 @@ npm run dev
 | Layer | Technology |
 |-------|-----------|
 | Frontend | React + Vite |
-| Database | Supabase (PostgreSQL) |
+| Database | Supabase (PostgreSQL + Storage) |
 | AI (cloud) | Claude Sonnet 4 via Anthropic API |
 | AI (local) | Ollama (Llama 3.2 / Mistral / DeepSeek R1) |
+| DOCX engine | mammoth (extract) + pizzip/docxtemplater (generate) |
 | Styling | Inline styles, zero CSS frameworks |
 | Auth | None (single-user, RLS open) |
 
@@ -121,7 +126,8 @@ npm run dev
 - [ ] Authentication (Supabase Auth)
 - [ ] Multi-device sync
 - [ ] Drag-and-drop Kanban
-- [ ] PDF resume export
+- [x] ~~PDF resume export~~ DOCX export (shipped)
+- [ ] PDF export from DOCX
 - [ ] Browser extension to auto-import job listings
 - [ ] Salary tracking and negotiation prep
 

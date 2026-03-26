@@ -33,10 +33,10 @@ npm install
 
 ### 2b. Create the tables
 
-Go to **SQL Editor** in the Supabase dashboard and run:
+Go to **SQL Editor** in the Supabase dashboard and run this single block:
 
 ```sql
--- Job applications
+-- Job applications (with AI response caching)
 create table applications (
   id          bigint primary key,
   company     text not null,
@@ -46,23 +46,31 @@ create table applications (
   notes       text default '',
   jd          text default '',
   date        text not null,
+  ai_results  jsonb default '{}',
   created_at  timestamptz default now()
 );
 
--- Base resume (single row)
+-- Base resumes (versioned — each save creates a new row)
 create table resumes (
   id         serial primary key,
   content    text not null default '',
+  docx_path  text default '',
+  created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
-
--- Seed an empty resume row
-insert into resumes (content) values ('');
 ```
 
-### 2c. Enable Row Level Security
+### 2c. Create the storage bucket
 
-Run this in the same SQL Editor:
+DOCX resume files are stored in Supabase Storage. Run this in the same SQL Editor:
+
+```sql
+-- Storage bucket for DOCX files
+insert into storage.buckets (id, name, public)
+values ('resumes', 'resumes', false);
+```
+
+### 2d. Enable Row Level Security
 
 ```sql
 alter table applications enable row level security;
@@ -73,11 +81,14 @@ create policy "Allow all on applications" on applications
 
 create policy "Allow all on resumes" on resumes
   for all using (true) with check (true);
+
+create policy "Allow all on resumes bucket" on storage.objects
+  for all using (bucket_id = 'resumes') with check (bucket_id = 'resumes');
 ```
 
 > This allows public access for a single-user setup. If you add auth later, replace `(true)` with `(auth.uid() = user_id)`.
 
-### 2d. Grab your keys
+### 2e. Grab your keys
 
 Go to **Project Settings → API** and copy:
 
@@ -167,7 +178,9 @@ ollama pull deepseek-r1:8b  # strong reasoning
 |---------|-----|
 | Blank page / network errors | Make sure `.env` values are correct and you restarted `npm run dev` after editing `.env` |
 | "API key not configured" | Add `VITE_ANTHROPIC_API_KEY` to `.env` (or switch to Ollama mode) |
-| Supabase table errors | Make sure you ran both SQL blocks (tables + RLS policies) |
+| Supabase table errors | Make sure you ran all 3 SQL blocks (tables, storage bucket, RLS policies) |
+| DOCX upload fails | Check that the `resumes` storage bucket exists and the RLS policy is set |
+| DOWNLOAD DOCX doesn't appear | Only shows when resume action returns valid JSON and a DOCX template is uploaded |
 | Ollama status dot is red | Run `ollama serve` in a terminal, or open the Ollama app |
 | Ollama model slow on first use | The model is being downloaded (~2–5 GB). Subsequent runs are instant |
 | CORS errors with Ollama | Ollama allows `localhost` by default. If you changed the origin, set `OLLAMA_ORIGINS=*` |
@@ -179,12 +192,24 @@ ollama pull deepseek-r1:8b  # strong reasoning
 ```
 tracker/
 ├── .env                  ← your API keys (not committed)
+├── .env.example          ← template for .env
 ├── src/
 │   ├── main.jsx          ← entry point
-│   ├── App.jsx           ← entire app (state, UI, AI calls)
+│   ├── App.jsx           ← entire app (state, UI, AI calls, DOCX engine)
 │   └── supabase.js       ← Supabase client init
+├── README.md             ← project overview
+├── SETUP.md              ← this file
+├── ARCHITECTURE.md       ← technical deep-dive
 ├── package.json
 └── vite.config.js
 ```
+
+### Supabase Structure
+
+| Resource | What it stores |
+|----------|---------------|
+| `applications` table | Job data + cached AI responses (`ai_results` JSONB) |
+| `resumes` table | Resume versions (text content + DOCX path + timestamps) |
+| `resumes` storage bucket | Uploaded DOCX files (versioned filenames) |
 
 That's it — no hidden configs, no backend servers, no build pipelines. Just a React app with AI superpowers.
