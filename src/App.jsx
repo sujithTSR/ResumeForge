@@ -664,51 +664,185 @@ export default function JobTracker() {
   return (
     <div style={{ fontFamily: "'DM Mono', monospace", background: "#0d0f14", minHeight: "100vh", color: "#c8cdd8" }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Inter:wght@300;400;500;600&family=Instrument+Serif:ital@0;1&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        ::-webkit-scrollbar { width: 4px; height: 4px; }
-        ::-webkit-scrollbar-track { background: #0d0f14; }
-        ::-webkit-scrollbar-thumb { background: #2a2f3d; border-radius: 2px; }
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #1e2335; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #2a3050; }
         input, textarea, select { font-family: inherit; }
-        .btn { cursor: pointer; border: none; outline: none; transition: all 0.15s; }
-        .btn:hover { opacity: 0.85; }
-        .card { background: #12151c; border: 1px solid #1e2330; border-radius: 8px; }
-        .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
-        .inp { background: #0d0f14; border: 1px solid #1e2330; border-radius: 6px; color: #c8cdd8; padding: 8px 12px; width: 100%; font-size: 13px; }
-        .inp:focus { outline: none; border-color: #e8c56a; }
-        .inp::placeholder { color: #2a2f3d; }
-        .board-col { min-width: 210px; max-width: 210px; }
-        .job-card { cursor: pointer; transition: all 0.15s; }
-        .job-card:hover { border-color: #2a2f3d !important; transform: translateY(-1px); }
-        .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.78); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; }
-        .modal { background: #12151c; border: 1px solid #1e2330; border-radius: 12px; padding: 26px; width: 640px; max-width: 100%; max-height: 92vh; overflow-y: auto; }
-        .ai-btn { background: #0f1118; border: 1px solid #1a1e2a; border-radius: 6px; color: #5a6080; padding: 9px 11px; font-size: 11px; cursor: pointer; transition: all 0.15s; text-align: left; position: relative; font-family: inherit; }
-        .ai-btn:hover { border-color: #2a2f3d; color: #a0a8be; background: #12151c; }
-        .ai-result { background: #080a0f; border: 1px solid #1a1e2a; border-radius: 8px; padding: 16px; font-size: 12px; line-height: 1.8; white-space: pre-wrap; overflow-y: auto; color: #a8b0c0; }
-        .shimmer { background: linear-gradient(90deg, #141720 25%, #1e2235 50%, #141720 75%); background-size: 200%; animation: shimmer 1.4s infinite; border-radius: 3px; }
+
+        .btn { cursor: pointer; border: none; outline: none; transition: all 0.2s ease; }
+        .btn:hover { transform: translateY(-0.5px); }
+        .btn:active { transform: translateY(0.5px); }
+
+        .card {
+          background: linear-gradient(145deg, #13161e 0%, #10131a 100%);
+          border: 1px solid #1a1e2e;
+          border-radius: 10px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.15), 0 0 0 0.5px rgba(255,255,255,0.02) inset;
+        }
+
+        .tag { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 6px; font-size: 10px; font-weight: 500; letter-spacing: 0.3px; }
+
+        .inp {
+          background: #0a0c12;
+          border: 1px solid #1a1e2e;
+          border-radius: 8px;
+          color: #c8cdd8;
+          padding: 10px 14px;
+          width: 100%;
+          font-size: 13px;
+          transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .inp:focus { outline: none; border-color: #e8c56a55; box-shadow: 0 0 0 3px rgba(232,197,106,0.06); }
+        .inp::placeholder { color: #282d3d; }
+
+        .board-col { min-width: 220px; max-width: 220px; }
+
+        .job-card {
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+        .job-card:hover {
+          border-color: #2a3050 !important;
+          transform: translateY(-2px);
+          box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+        }
+
+        .overlay {
+          position: fixed; inset: 0;
+          background: rgba(0,0,0,0.6);
+          backdrop-filter: blur(8px);
+          -webkit-backdrop-filter: blur(8px);
+          z-index: 50;
+          display: flex; align-items: center; justify-content: center;
+          padding: 16px;
+          animation: fadeIn 0.15s ease;
+        }
+
+        .modal {
+          background: linear-gradient(160deg, #14171f 0%, #0f1118 100%);
+          border: 1px solid #1e2235;
+          border-radius: 16px;
+          padding: 28px;
+          width: 640px;
+          max-width: 100%;
+          max-height: 92vh;
+          overflow-y: auto;
+          box-shadow: 0 24px 80px rgba(0,0,0,0.5), 0 0 0 0.5px rgba(255,255,255,0.03) inset;
+          animation: slideUp 0.2s ease;
+        }
+
+        .ai-btn {
+          background: linear-gradient(135deg, #0f1118 0%, #0c0e15 100%);
+          border: 1px solid #1a1e2a;
+          border-radius: 8px;
+          color: #5a6080;
+          padding: 10px 12px;
+          font-size: 11px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          text-align: left;
+          position: relative;
+          font-family: inherit;
+          overflow: hidden;
+        }
+        .ai-btn::before {
+          content: '';
+          position: absolute;
+          top: 0; left: 0; right: 0;
+          height: 1px;
+          background: linear-gradient(90deg, transparent, rgba(255,255,255,0.04), transparent);
+        }
+        .ai-btn:hover {
+          border-color: #2a3050;
+          color: #b0b8d0;
+          background: linear-gradient(135deg, #141825 0%, #0f1118 100%);
+          transform: translateY(-1px);
+          box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+
+        .ai-result {
+          background: #080a0f;
+          border: 1px solid #141825;
+          border-radius: 10px;
+          padding: 18px;
+          font-size: 12px;
+          line-height: 1.85;
+          white-space: pre-wrap;
+          overflow-y: auto;
+          color: #a8b0c5;
+          box-shadow: 0 2px 12px rgba(0,0,0,0.15) inset;
+        }
+
+        .shimmer {
+          background: linear-gradient(90deg, #141720 25%, #1e2240 50%, #141720 75%);
+          background-size: 200%;
+          animation: shimmer 1.4s infinite;
+          border-radius: 4px;
+        }
         @keyframes shimmer { 0%{background-position:200%} 100%{background-position:-200%} }
-        .copy-btn { background: #141720; border: 1px solid #1e2330; border-radius: 4px; color: #5a6080; padding: 3px 10px; font-size: 10px; cursor: pointer; font-family: inherit; transition: all 0.15s; letter-spacing: 0.5px; }
-        .copy-btn:hover { border-color: #e8c56a88; color: #e8c56a; }
-        .lbl { font-size: 9px; letter-spacing: 2px; color: #2a2f3d; margin-bottom: 7px; display: block; }
+        @keyframes fadeIn { from{opacity:0} to{opacity:1} }
+        @keyframes slideUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+
+        .copy-btn {
+          background: linear-gradient(135deg, #141720 0%, #111420 100%);
+          border: 1px solid #1e2335;
+          border-radius: 6px;
+          color: #5a6080;
+          padding: 4px 12px;
+          font-size: 10px;
+          cursor: pointer;
+          font-family: inherit;
+          transition: all 0.2s ease;
+          letter-spacing: 0.5px;
+        }
+        .copy-btn:hover { border-color: #e8c56a44; color: #e8c56a; background: #1a1e2a; transform: translateY(-0.5px); }
+
+        .lbl {
+          font-size: 9px;
+          letter-spacing: 2.5px;
+          color: #404860;
+          margin-bottom: 8px;
+          display: block;
+          text-transform: uppercase;
+        }
+
+        .detail-section {
+          padding: 12px 0;
+          border-bottom: 1px solid #111520;
+        }
+        .detail-section:last-child { border-bottom: none; }
+
+        .glow-dot {
+          display: inline-block;
+          border-radius: 50%;
+          animation: pulse 2s infinite;
+        }
       `}</style>
 
       {/* ── HEADER ── */}
-      <div style={{ borderBottom: "1px solid #1a1e2a", padding: "13px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+      <div style={{ borderBottom: "1px solid #141825", padding: "14px 22px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+        background: "linear-gradient(180deg, #0e1019 0%, #0a0c12 100%)" }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-          <span style={{ fontFamily: "'Instrument Serif', serif", fontSize: 21, color: "#e8c56a", fontStyle: "italic" }}>JobTrack</span>
-          <span style={{ fontSize: 9, color: "#2a2f3d", letterSpacing: 2.5 }}>AI WORKFLOW</span>
+          <span style={{ fontFamily: "'Instrument Serif', serif", fontSize: 23, color: "#f5dfa0", fontStyle: "italic",
+            textShadow: "0 0 24px rgba(245,223,160,0.3), 0 1px 2px rgba(0,0,0,0.5)" }}>JobTrack</span>
+          <span style={{ fontSize: 9, color: "#505878", letterSpacing: 3, fontWeight: 600 }}>AI WORKFLOW</span>
         </div>
 
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           {/* Stats */}
           {[["TOTAL", stats.total, "#c8cdd8"], ["ACTIVE", stats.active, "#7aafff"], ["OFFERS", stats.offers, "#5de8b8"]].map(([l, v, c]) => (
-            <div key={l} style={{ textAlign: "center", minWidth: 36 }}>
-              <div style={{ fontSize: 16, fontWeight: 500, color: c, lineHeight: 1 }}>{v}</div>
-              <div style={{ fontSize: 8, color: "#2a2f3d", letterSpacing: 1.5, marginTop: 2 }}>{l}</div>
+            <div key={l} style={{ textAlign: "center", minWidth: 40, padding: "4px 6px", borderRadius: 8,
+              background: `linear-gradient(135deg, ${c}06, transparent)` }}>
+              <div style={{ fontSize: 17, fontWeight: 600, color: c, lineHeight: 1, fontFamily: "'Inter', sans-serif" }}>{v}</div>
+              <div style={{ fontSize: 7, color: "#2a2f40", letterSpacing: 2, marginTop: 3, fontWeight: 500 }}>{l}</div>
             </div>
           ))}
 
-          <div style={{ width: 1, height: 28, background: "#1a1e2a", margin: "0 4px" }} />
+          <div style={{ width: 1, height: 24, background: "#252a3a", margin: "0 6px" }} />
 
           {/* AI Provider toggle */}
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -738,7 +872,7 @@ export default function JobTracker() {
             )}
           </div>
 
-          <div style={{ width: 1, height: 28, background: "#1a1e2a", margin: "0 4px" }} />
+          <div style={{ width: 1, height: 24, background: "#252a3a", margin: "0 6px" }} />
 
           {/* My Resume button */}
           <button className="btn" onClick={() => { setResumeDraft(baseResume); setShowResumeModal(true); }}
@@ -762,7 +896,9 @@ export default function JobTracker() {
           </div>
 
           <button className="btn" onClick={() => setShowForm(true)}
-            style={{ background: "#e8c56a", color: "#0a0b0f", borderRadius: 6, padding: "6px 15px", fontSize: 11, fontWeight: 500, letterSpacing: 0.3 }}>
+            style={{ background: "linear-gradient(135deg, #e8c56a 0%, #d4a84a 100%)", color: "#0a0b0f", borderRadius: 8,
+              padding: "7px 18px", fontSize: 11, fontWeight: 600, letterSpacing: 0.3,
+              boxShadow: "0 2px 12px rgba(232,197,106,0.2)" }}>
             + Add Job
           </button>
         </div>
@@ -790,17 +926,20 @@ export default function JobTracker() {
         {/* Main area */}
         <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
           {/* Filter chips */}
-          <div style={{ display: "flex", gap: 5, marginBottom: 16, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 6, marginBottom: 18, flexWrap: "wrap" }}>
             {["All", ...STATUSES].map(s => {
               const st = STATUS_STYLE[s];
               const active = filterStatus === s;
+              const count = s !== "All" ? apps.filter(a => a.status === s).length : null;
               return (
                 <button key={s} className="btn" onClick={() => { setFilterStatus(s); if (s !== "All") setView("list"); }}
-                  style={{ padding: "3px 10px", borderRadius: 20, fontSize: 9, letterSpacing: 0.8,
-                    border: `1px solid ${active && st ? st.border : "#1a1e2a"}`,
-                    background: active && st ? st.bg : "transparent",
-                    color: active && st ? st.text : "#2a2f3d" }}>
-                  {s}{s !== "All" && <span style={{ marginLeft: 4, opacity: 0.5 }}>{apps.filter(a => a.status === s).length}</span>}
+                  style={{ padding: "5px 12px", borderRadius: 20, fontSize: 10, letterSpacing: 0.5, fontWeight: 500,
+                    border: `1px solid ${active && st ? st.border : "#161a28"}`,
+                    background: active && st ? `linear-gradient(135deg, ${st.bg}, transparent)` : "transparent",
+                    color: active && st ? st.text : active ? "#c8cdd8" : "#2a2f40",
+                    boxShadow: active && st ? `0 0 12px ${st.border}33` : "none",
+                    transition: "all 0.2s ease" }}>
+                  {s}{count != null && <span style={{ marginLeft: 5, opacity: 0.4, fontSize: 9 }}>{count}</span>}
                 </button>
               );
             })}
@@ -813,17 +952,20 @@ export default function JobTracker() {
                 const st = STATUS_STYLE[col.status];
                 return (
                   <div key={col.status} className="board-col">
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                      <span style={{ fontSize: 8, letterSpacing: 2, color: st.text }}>{col.status.toUpperCase()}</span>
-                      <span style={{ fontSize: 9, color: "#2a2f3d" }}>{col.items.length}</span>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, padding: "6px 10px",
+                      background: `linear-gradient(135deg, ${st.bg}, transparent)`, borderRadius: 8,
+                      borderLeft: `2px solid ${st.border}` }}>
+                      <span style={{ fontSize: 9, letterSpacing: 2, color: st.text, fontWeight: 500 }}>{col.status.toUpperCase()}</span>
+                      <span style={{ fontSize: 10, color: st.text + "66", fontWeight: 600, fontFamily: "'Inter', sans-serif" }}>{col.items.length}</span>
                     </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
                       {col.items.map(app => (
                         <JobCard key={app.id} app={app} isSelected={selected?.id === app.id}
                           onClick={() => { setSelected(app); setAiResult({ action: null, text: "", json: null, loading: false }); }} />
                       ))}
                       {col.items.length === 0 && (
-                        <div style={{ border: "1px dashed #141720", borderRadius: 7, padding: "20px 10px", textAlign: "center", fontSize: 9, color: "#1a1e2a" }}>empty</div>
+                        <div style={{ border: "1px dashed #161a28", borderRadius: 8, padding: "24px 10px", textAlign: "center",
+                          fontSize: 10, color: "#1a1e2a", background: "#0a0c10" }}>No jobs yet</div>
                       )}
                     </div>
                   </div>
@@ -835,7 +977,13 @@ export default function JobTracker() {
           {/* List */}
           {view === "list" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {filtered.length === 0 && <div style={{ textAlign: "center", padding: 48, color: "#2a2f3d", fontSize: 12 }}>No applications found.</div>}
+              {filtered.length === 0 && (
+                <div style={{ textAlign: "center", padding: "60px 20px" }}>
+                  <div style={{ fontSize: 28, marginBottom: 8, opacity: 0.3 }}>📋</div>
+                  <div style={{ color: "#2a2f40", fontSize: 13, fontWeight: 500 }}>No applications found</div>
+                  <div style={{ color: "#1a1e2a", fontSize: 11, marginTop: 4 }}>Click "+ Add Job" to get started</div>
+                </div>
+              )}
               {filtered.map(app => (
                 <div key={app.id} className="card job-card" onClick={() => { setSelected(app); setAiResult({ action: null, text: "", json: null, loading: false }); }}
                   style={{ padding: "10px 15px", display: "flex", alignItems: "center", gap: 14,
@@ -853,14 +1001,21 @@ export default function JobTracker() {
 
         {/* ── DETAIL PANEL ── */}
         {selected && (
-          <div style={{ width: 390, borderLeft: "1px solid #1a1e2a", overflow: "auto", padding: 18, display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ width: 400, borderLeft: "1px solid #111520", overflow: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 16,
+            background: "linear-gradient(180deg, #0f1118 0%, #0d0f14 100%)" }}>
             {/* Title */}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div>
-                <div style={{ fontFamily: "'Instrument Serif', serif", fontSize: 18, color: "#e8e4d0", fontStyle: "italic", lineHeight: 1.25 }}>{selected.role}</div>
-                <div style={{ fontSize: 11, color: "#3a4055", marginTop: 3 }}>{selected.company} · {selected.date}</div>
+                <div style={{ fontFamily: "'Instrument Serif', serif", fontSize: 20, color: "#eae6d2", fontStyle: "italic", lineHeight: 1.25 }}>{selected.role}</div>
+                <div style={{ fontSize: 11, color: "#3a4058", marginTop: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontWeight: 500 }}>{selected.company}</span>
+                  <span style={{ color: "#1e2230" }}>·</span>
+                  <span>{selected.date}</span>
+                </div>
               </div>
-              <button className="btn" onClick={() => setSelected(null)} style={{ color: "#2a2f3d", fontSize: 18, background: "none" }}>×</button>
+              <button className="btn" onClick={() => setSelected(null)}
+                style={{ color: "#2a2f3d", fontSize: 16, background: "#0a0c10", width: 28, height: 28, borderRadius: 8,
+                  display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid #161a28" }}>×</button>
             </div>
 
             {/* Status */}
@@ -967,11 +1122,15 @@ export default function JobTracker() {
                 </div>
 
                 {aiResult.loading ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 0" }}>
-                    {[95, 80, 88, 65, 92, 55, 75].map((w, i) => (
-                      <div key={i} className="shimmer" style={{ height: 11, width: `${w}%` }} />
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "14px 0" }}>
+                    {[95, 75, 88, 60, 92, 50, 70, 82].map((w, i) => (
+                      <div key={i} className="shimmer" style={{ height: 10, width: `${w}%`, opacity: 1 - i * 0.05 }} />
                     ))}
-                    <div style={{ fontSize: 9, color: "#2a2f3d", marginTop: 4, letterSpacing: 1 }}>
+                    <div style={{ fontSize: 9, color: "#2a3045", marginTop: 6, letterSpacing: 1.5, fontWeight: 500,
+                      display: "flex", alignItems: "center", gap: 8 }}>
+                      <span className="glow-dot" style={{ width: 5, height: 5,
+                        background: aiProvider === "ollama" ? "#5de8b8" : "#c09af0",
+                        boxShadow: `0 0 8px ${aiProvider === "ollama" ? "#5de8b8" : "#c09af0"}` }} />
                       {aiProvider === "ollama" ? `GENERATING WITH ${ollamaModel.toUpperCase()}…` : "GENERATING WITH CLAUDE…"}
                     </div>
                   </div>
@@ -985,7 +1144,11 @@ export default function JobTracker() {
 
             {/* Delete */}
             <button className="btn" onClick={() => deleteApp(selected.id)}
-              style={{ marginTop: "auto", padding: "7px", background: "none", border: "1px solid #1e1010", borderRadius: 6, color: "#4a2020", fontSize: 10, letterSpacing: 1 }}>
+              style={{ marginTop: "auto", padding: "8px", background: "#0e0808", border: "1px solid #1e1212", borderRadius: 8,
+                color: "#5a2828", fontSize: 10, letterSpacing: 1.5, fontWeight: 500,
+                transition: "all 0.2s ease" }}
+              onMouseOver={e => { e.currentTarget.style.background = "#1a0e0e"; e.currentTarget.style.borderColor = "#3a1818"; e.currentTarget.style.color = "#f07070"; }}
+              onMouseOut={e => { e.currentTarget.style.background = "#0e0808"; e.currentTarget.style.borderColor = "#1e1212"; e.currentTarget.style.color = "#5a2828"; }}>
               DELETE APPLICATION
             </button>
           </div>
@@ -1200,14 +1363,23 @@ export default function JobTracker() {
 // ── Sub-components ───────────────────────────────────────────────
 function JobCard({ app, onClick, isSelected }) {
   const st = STATUS_STYLE[app.status];
+  const hasCachedResults = app.ai_results && Object.keys(app.ai_results).length > 0;
   return (
     <div className="card job-card" onClick={onClick}
-      style={{ padding: "10px", border: isSelected ? "1px solid #e8c56a2a" : "1px solid #1a1e2a" }}>
-      <div style={{ fontSize: 12.5, fontWeight: 500, color: "#dce0ee", marginBottom: 3, lineHeight: 1.3 }}>{app.role}</div>
-      <div style={{ fontSize: 10.5, color: "#3a4055", marginBottom: 7 }}>{app.company}</div>
+      style={{ padding: "11px 12px",
+        border: isSelected ? `1px solid ${st.border}55` : "1px solid #161a28",
+        background: isSelected ? `linear-gradient(145deg, ${st.bg}88, #10131a)` : undefined }}>
+      <div style={{ fontSize: 12.5, fontWeight: 500, color: "#dce0ee", marginBottom: 4, lineHeight: 1.35 }}>{app.role}</div>
+      <div style={{ fontSize: 10.5, color: "#3a4058", marginBottom: 8 }}>{app.company}</div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <StatusBadge status={app.status} />
-        <span style={{ fontSize: 9, color: "#1e2230" }}>{app.date}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {hasCachedResults && (
+            <span style={{ width: 4, height: 4, borderRadius: "50%", background: "#e8c56a44", display: "inline-block" }}
+              title="Has cached AI results" />
+          )}
+          <span style={{ fontSize: 9, color: "#1e2235" }}>{app.date}</span>
+        </div>
       </div>
     </div>
   );
@@ -1216,7 +1388,13 @@ function JobCard({ app, onClick, isSelected }) {
 function StatusBadge({ status }) {
   const st = STATUS_STYLE[status];
   return (
-    <span className="tag" style={{ background: st.bg, border: `1px solid ${st.border}`, color: st.text }}>
+    <span className="tag" style={{
+      background: `linear-gradient(135deg, ${st.bg}, transparent)`,
+      border: `1px solid ${st.border}`,
+      color: st.text,
+      boxShadow: `0 0 8px ${st.border}22`
+    }}>
+      <span style={{ width: 4, height: 4, borderRadius: "50%", background: st.text, display: "inline-block", opacity: 0.6 }} />
       {status}
     </span>
   );
