@@ -1,5 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { supabase } from "./supabase";
+import mammoth from "mammoth";
+import PizZip from "pizzip";
+import Docxtemplater from "docxtemplater";
+import { saveAs } from "file-saver";
 
 // ── Storage helpers (Supabase) ──────────────────────────────────
 async function loadApps() {
@@ -22,21 +26,213 @@ async function deleteAppById(id) {
   const { error } = await supabase.from("applications").delete().eq("id", id);
   if (error) console.error("deleteAppById:", error);
 }
-async function loadResume() {
+async function loadAllResumes() {
   const { data, error } = await supabase
     .from("resumes")
-    .select("content")
-    .limit(1)
-    .single();
-  if (error) { console.error("loadResume:", error); return ""; }
-  return data?.content || "";
+    .select("id, content, docx_path, created_at")
+    .order("created_at", { ascending: false });
+  if (error) { console.error("loadAllResumes:", error); return []; }
+  return (data || []).map(r => ({
+    id: r.id,
+    content: r.content || "",
+    docxPath: r.docx_path || "",
+    createdAt: r.created_at,
+  }));
 }
-async function saveResume(text) {
-  const { error } = await supabase
+async function saveResume(text, docxPath = "") {
+  const { data, error } = await supabase
     .from("resumes")
-    .update({ content: text, updated_at: new Date().toISOString() })
-    .eq("id", 1);
-  if (error) console.error("saveResume:", error);
+    .insert({ content: text, docx_path: docxPath, created_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .select("id, created_at")
+    .single();
+  if (error) { console.error("saveResume:", error); return null; }
+  return { id: data.id, createdAt: data.created_at };
+}
+async function deleteResumeById(id, docxPath) {
+  if (docxPath) {
+    await supabase.storage.from("resumes").remove([docxPath]);
+  }
+  const { error } = await supabase.from("resumes").delete().eq("id", id);
+  if (error) console.error("deleteResume:", error);
+}
+
+// ── DOCX helpers ────────────────────────────────────────────────
+async function uploadDocx(file) {
+  const ts = Date.now();
+  const path = `base_resume_${ts}.docx`;
+  const { error } = await supabase.storage
+    .from("resumes")
+    .upload(path, file, { contentType: file.type });
+  if (error) { console.error("uploadDocx:", error); return null; }
+  return path;
+}
+async function downloadDocxTemplate(path) {
+  const { data, error } = await supabase.storage
+    .from("resumes")
+    .download(path);
+  if (error) { console.error("downloadDocx:", error); return null; }
+  return await data.arrayBuffer();
+}
+async function extractTextFromDocx(arrayBuffer) {
+  const result = await mammoth.extractRawText({ arrayBuffer });
+  return result.value || "";
+}
+
+function formatResumeJsonAsText(json) {
+  const lines = [];
+  if (json.summary) { lines.push("PROFESSIONAL SUMMARY", json.summary, ""); }
+  if (json.experience) {
+    lines.push("EXPERIENCE");
+    json.experience.forEach(e => {
+      lines.push(`${e.title} — ${e.company}  (${e.dates || ""})`);
+      (e.bullets || []).forEach(b => lines.push(`  • ${b}`));
+      lines.push("");
+    });
+  }
+  if (json.skills) { lines.push("SKILLS", json.skills.join("  |  "), ""); }
+  if (json.education) {
+    lines.push("EDUCATION");
+    json.education.forEach(e => lines.push(`${e.degree} — ${e.institution}  (${e.year || ""})`));
+    lines.push("");
+  }
+  if (json.certifications) { lines.push("CERTIFICATIONS", ...json.certifications, ""); }
+  return lines.join("\n");
+}
+
+function parseResumeJson(text) {
+  // Try to extract JSON from AI response (may have markdown fences or preamble)
+  try { return JSON.parse(text); } catch { /* not pure JSON */ }
+  const match = text.match(/\{[\s\S]*\}/);
+  if (match) { try { return JSON.parse(match[0]); } catch { /* bad JSON */ } }
+  return null;
+}
+
+function generateTailoredDocx(templateBuffer, resumeJson) {
+  const zip = new PizZip(templateBuffer);
+  const xml = zip.file("word/document.xml").asText();
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xml, "application/xml");
+  const nsURI = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const body = doc.getElementsByTagNameNS(nsURI, "body")[0];
+  const paragraphs = body.getElementsByTagNameNS(nsURI, "p");
+
+  // Build section map: find heading paragraphs and their content ranges
+  const sections = [];
+  for (let i = 0; i < paragraphs.length; i++) {
+    const p = paragraphs[i];
+    const pPr = p.getElementsByTagNameNS(nsURI, "pPr")[0];
+    const pStyle = pPr?.getElementsByTagNameNS(nsURI, "pStyle")[0];
+    const styleVal = pStyle?.getAttribute("w:val") || "";
+    const isHeading = /heading/i.test(styleVal) || /Title/i.test(styleVal);
+    // Also detect bold-only paragraphs as pseudo-headings
+    const runs = p.getElementsByTagNameNS(nsURI, "r");
+    const allText = Array.from(runs).map(r => {
+      const t = r.getElementsByTagNameNS(nsURI, "t")[0];
+      return t?.textContent || "";
+    }).join("").trim();
+    const isBoldHeading = !isHeading && allText.length > 0 && allText.length < 60 && runs.length > 0 &&
+      Array.from(runs).every(r => {
+        const rPr = r.getElementsByTagNameNS(nsURI, "rPr")[0];
+        return rPr?.getElementsByTagNameNS(nsURI, "b")[0] != null;
+      });
+
+    if ((isHeading || isBoldHeading) && allText) {
+      sections.push({ heading: allText.toUpperCase(), index: i, contentStart: i + 1, contentEnd: null });
+    }
+  }
+  // Set content end for each section
+  for (let i = 0; i < sections.length; i++) {
+    sections[i].contentEnd = (i + 1 < sections.length) ? sections[i + 1].index : paragraphs.length;
+  }
+
+  // Helper: set all text in a paragraph while preserving the first run's formatting
+  const setParagraphText = (p, text) => {
+    const runs = p.getElementsByTagNameNS(nsURI, "r");
+    if (runs.length === 0) return;
+    // Keep first run's rPr, set its text, remove all other runs
+    const firstRun = runs[0];
+    const t = firstRun.getElementsByTagNameNS(nsURI, "t")[0];
+    if (t) { t.textContent = text; t.setAttribute("xml:space", "preserve"); }
+    for (let i = runs.length - 1; i > 0; i--) runs[i].parentNode.removeChild(runs[i]);
+  };
+
+  // Helper: clone a paragraph with new text, preserving style
+  const cloneParagraphWithText = (templateP, text) => {
+    const clone = templateP.cloneNode(true);
+    setParagraphText(clone, text);
+    return clone;
+  };
+
+  // Map AI JSON sections to document sections
+  const sectionMap = {
+    "SUMMARY": resumeJson.summary,
+    "PROFESSIONAL SUMMARY": resumeJson.summary,
+    "PROFILE": resumeJson.summary,
+    "EXPERIENCE": resumeJson.experience,
+    "WORK EXPERIENCE": resumeJson.experience,
+    "EMPLOYMENT": resumeJson.experience,
+    "SKILLS": resumeJson.skills,
+    "TECHNICAL SKILLS": resumeJson.skills,
+    "CORE COMPETENCIES": resumeJson.skills,
+    "EDUCATION": resumeJson.education,
+    "CERTIFICATIONS": resumeJson.certifications,
+  };
+
+  // Process each section in reverse order (so indices stay valid)
+  for (let s = sections.length - 1; s >= 0; s--) {
+    const sec = sections[s];
+    const newContent = sectionMap[sec.heading];
+    if (!newContent) continue;
+
+    // Get a template paragraph from this section for cloning style
+    const templateP = (sec.contentStart < sec.contentEnd) ? paragraphs[sec.contentStart] : null;
+    if (!templateP) continue;
+
+    // Remove old content paragraphs
+    const toRemove = [];
+    for (let i = sec.contentStart; i < sec.contentEnd; i++) toRemove.push(paragraphs[i]);
+    toRemove.forEach(p => p.parentNode.removeChild(p));
+
+    // Insert new content — use heading's nextSibling since the paragraphs collection is live
+    const headingP = paragraphs[sec.index] || body.lastChild;
+    let insertPoint = headingP.nextSibling;
+
+    if (typeof newContent === "string") {
+      // Summary: single paragraph
+      const newP = cloneParagraphWithText(templateP, newContent);
+      body.insertBefore(newP, insertPoint);
+    } else if (Array.isArray(newContent) && typeof newContent[0] === "string") {
+      // Skills: array of strings
+      const joined = newContent.join("  |  ");
+      const newP = cloneParagraphWithText(templateP, joined);
+      body.insertBefore(newP, insertPoint);
+    } else if (Array.isArray(newContent)) {
+      // Experience or Education: array of objects
+      newContent.forEach(item => {
+        if (item.company || item.title || item.institution || item.degree) {
+          const header = item.company
+            ? `${item.title} — ${item.company}  (${item.dates || ""})`
+            : `${item.degree} — ${item.institution}  (${item.year || ""})`;
+          const headerP = cloneParagraphWithText(templateP, header);
+          body.insertBefore(headerP, insertPoint);
+          insertPoint = headerP.nextSibling;
+        }
+        if (item.bullets) {
+          item.bullets.forEach(bullet => {
+            const bulletP = cloneParagraphWithText(templateP, `• ${bullet}`);
+            body.insertBefore(bulletP, insertPoint);
+            insertPoint = bulletP.nextSibling;
+          });
+        }
+      });
+    }
+  }
+
+  // Serialize back
+  const serializer = new XMLSerializer();
+  const newXml = serializer.serializeToString(doc);
+  zip.file("word/document.xml", newXml);
+  return zip.generate({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
 }
 
 // ── AI Provider helpers ──────────────────────────────────────────
@@ -154,16 +350,38 @@ const AI_ACTIONS = [
 ];
 
 const SYSTEM_PROMPTS = {
-  resume: `You are an elite resume strategist with deep ATS expertise. Given a candidate's base resume and a job description, produce a fully rewritten, tailored resume.
+  resume: `You are an elite resume strategist with deep ATS and human-readability expertise. Given a candidate's base resume and a job description, produce a fully rewritten, tailored resume as structured JSON.
 
-Rules:
+ATS Rules (critical):
+- Use standard section headings ONLY: "Summary", "Experience", "Skills", "Education", "Certifications"
+- No tables, columns, graphics, icons, or special characters
+- Mirror exact keywords and phrases from the job description naturally in bullet points
+- Spell out abbreviations on first use (e.g. "Search Engine Optimization (SEO)")
+- Every bullet must start with a strong past-tense action verb
+
+Human-Tone Rules:
+- Write like a confident professional, not a robot
+- NEVER use these words: leverage, utilize, spearhead, synergy, passionate, dynamic, results-driven, self-starter
+- Vary sentence length and structure — not every bullet should follow the same pattern
+- Be specific: numbers, tools, team sizes, timelines — vague claims get ignored
+- Quantify impact with ranges if exact numbers aren't available (e.g. "~30%", "50K+")
+
+Content Rules:
 - NEVER invent experience, roles, or qualifications not present in the base resume
-- Reorder sections and bullet points so the most relevant experience appears first
-- Reframe existing bullets using the JD's exact keywords and action language
-- Strengthen every bullet with strong verbs and quantified impact (estimate ranges if exact numbers aren't given)
-- Add a concise "Professional Summary" (2–3 sentences) at the top, targeted to this specific role and company
-- Structure clearly: Summary → Experience → Skills → Education
-- Output clean plain-text — no markdown symbols, just headings and bullets with dashes`,
+- Reorder sections and bullets so the most relevant experience appears first
+- Add a concise Professional Summary (2–3 sentences) targeted to this specific role
+
+Output ONLY valid JSON with this exact structure (no markdown, no explanation, no text outside the JSON):
+{
+  "summary": "2-3 sentence professional summary",
+  "experience": [
+    { "company": "Company Name", "title": "Job Title", "dates": "Start – End", "bullets": ["bullet 1", "bullet 2"] }
+  ],
+  "skills": ["Skill 1", "Skill 2", "Skill 3"],
+  "education": [
+    { "institution": "School Name", "degree": "Degree", "year": "Year" }
+  ]
+}`,
 
   cover: `You are a master cover letter writer. Produce a compelling, tailored cover letter (~260 words, 4 paragraphs).
 
@@ -173,33 +391,81 @@ Structure:
 3. Value-add (2 sentences): Articulate what you uniquely bring that other candidates likely won't
 4. Close (1–2 sentences): Confident, warm call-to-action with availability
 
-Tone: professional, warm, specific — never generic or sycophantic. Address the hiring manager as "Hiring Team" if no name is given.`,
+ATS & Tone Rules:
+- Mirror 3–5 key phrases from the job description naturally in the letter
+- Write in first person as the candidate — warm, confident, specific
+- NEVER use: "I am excited to apply", "I believe I would be a great fit", "leverage", "utilize", "synergy", "dynamic"
+- Sound like a real human wrote this, not an AI. Vary sentence rhythm. Be conversational but professional.
+- Address the hiring manager as "Hiring Team" if no name is given.`,
 
-  fit:   "You are a senior recruiter. Analyse the resume against the job description. Output: (1) Fit Score /10 with one-line rationale. (2) ✅ Top 3 Strengths with specific evidence from the resume. (3) ⚠️ Top 3 Gaps with a concrete action to close each. Be direct and brutally honest.",
-  prep:  "You are an expert interview coach. Generate 5 likely interview questions for this exact role. For each: state the question, identify what the interviewer is really probing, and give a 3-bullet STAR-framework answer guide.",
-  email: "You are a career coach. Write a brief (3–4 sentence), professional follow-up email to send 5 business days after applying. Re-express genuine interest, name something specific about the company, and end with a clear next-step ask.",
+  fit: `You are a senior recruiter who has screened 10,000+ resumes. Analyse the resume against the job description with brutal honesty.
+
+Output format:
+(1) Fit Score /10 with one-line rationale
+(2) Top 3 Strengths — cite specific evidence from the resume, not vague praise
+(3) Top 3 Gaps — each with a concrete, actionable fix the candidate can do this week
+(4) ATS Risk Flags — missing keywords from the JD that the resume should include
+
+Be direct. No flattery. The candidate needs truth, not encouragement.`,
+
+  prep: `You are an expert interview coach who has conducted 5,000+ interviews. Generate 5 likely interview questions for this exact role.
+
+For each question:
+- State the question exactly as an interviewer would ask it
+- "What they're really asking" — the underlying competency being tested
+- 3-bullet STAR answer guide using specific details from the candidate's resume
+- One common mistake to avoid
+
+Make questions specific to this company and role, not generic. Include at least one behavioral, one technical, and one culture-fit question.`,
+
+  email: `You are a career coach. Write a brief (3–4 sentence), professional follow-up email to send 5 business days after applying.
+
+Rules:
+- Re-express genuine interest — reference something specific about the company (product, mission, recent news)
+- Connect one concrete skill from your resume to their biggest stated need
+- End with a clear, low-pressure next-step ask
+- NEVER use: "I am writing to follow up", "per my application", "I hope this email finds you well"
+- Sound human — like a real email you'd actually send, not a template`,
 };
 
 // ── Main App ─────────────────────────────────────────────────────
 export default function JobTracker() {
   const [apps, setApps]                       = useState([]);
   const [baseResume, setBaseResume]           = useState("");
+  const [resumeVersions, setResumeVersions] = useState([]);  // [{ id, content, docxPath, createdAt }]
+  const [activeResumeId, setActiveResumeId] = useState(null);
   const [resumeDraft, setResumeDraft]         = useState("");
   const [showResumeModal, setShowResumeModal] = useState(false);
   const [view, setView]                       = useState("board");
   const [showForm, setShowForm]               = useState(false);
   const [selected, setSelected]               = useState(null);
-  const [aiResult, setAiResult]               = useState({ action: null, text: "", loading: false });
+  const [aiResult, setAiResult]               = useState({ action: null, text: "", json: null, loading: false });
   const [copied, setCopied]                   = useState(false);
   const [filterStatus, setFilterStatus]       = useState("All");
   const [form, setForm]                       = useState({ company: "", role: "", url: "", status: "Wishlist", notes: "", jd: "" });
   const [aiProvider, setAiProvider]           = useState(() => localStorage.getItem("job_tracker_provider") || "claude");
   const [ollamaModel, setOllamaModel]         = useState(() => localStorage.getItem("job_tracker_ollama_model") || "llama3.2");
   const [ollamaStatus, setOllamaStatus]       = useState("unknown"); // "unknown" | "checking" | "online" | "offline"
+  const [docxPath, setDocxPath]               = useState("");
+  const [resumeTab, setResumeTab]             = useState("text"); // "text" | "docx"
+  const [docxUploading, setDocxUploading]     = useState(false);
+  const [docxGenerating, setDocxGenerating]   = useState(false);
+  const [docxPreview, setDocxPreview]         = useState("");
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     loadApps().then(setApps);
-    loadResume().then(r => { setBaseResume(r); setResumeDraft(r); });
+    loadAllResumes().then(versions => {
+      setResumeVersions(versions);
+      if (versions.length > 0) {
+        const latest = versions[0]; // already sorted desc
+        setActiveResumeId(latest.id);
+        setBaseResume(latest.content);
+        setResumeDraft(latest.content);
+        setDocxPath(latest.docxPath);
+        if (latest.docxPath) setResumeTab("docx");
+      }
+    });
   }, []);
 
   // Persist provider selection
@@ -220,7 +486,80 @@ export default function JobTracker() {
     return () => { cancelled = true; clearInterval(interval); };
   }, [aiProvider]);
 
-  const persistResume = r => { setBaseResume(r); saveResume(r); };
+  const persistResume = async (text, dPath = "") => {
+    setBaseResume(text);
+    const result = await saveResume(text, dPath);
+    if (result) {
+      const newVersion = { id: result.id, content: text, docxPath: dPath, createdAt: result.createdAt };
+      setResumeVersions(prev => [newVersion, ...prev]);
+      setActiveResumeId(result.id);
+      if (dPath) setDocxPath(dPath);
+    }
+  };
+
+  const switchResumeVersion = (id) => {
+    const version = resumeVersions.find(v => v.id === id);
+    if (!version) return;
+    setActiveResumeId(id);
+    setBaseResume(version.content);
+    setResumeDraft(version.content);
+    setDocxPath(version.docxPath);
+    setDocxPreview("");
+  };
+
+  const handleDeleteResume = async (id) => {
+    const version = resumeVersions.find(v => v.id === id);
+    if (!version) return;
+    await deleteResumeById(id, version.docxPath);
+    const remaining = resumeVersions.filter(v => v.id !== id);
+    setResumeVersions(remaining);
+    if (activeResumeId === id) {
+      if (remaining.length > 0) {
+        switchResumeVersion(remaining[0].id);
+      } else {
+        setActiveResumeId(null);
+        setBaseResume("");
+        setResumeDraft("");
+        setDocxPath("");
+        setDocxPreview("");
+      }
+    }
+  };
+
+  const handleDocxUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setDocxUploading(true);
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const text = await extractTextFromDocx(arrayBuffer);
+      setDocxPreview(text);
+      setResumeDraft(text);
+      const storagePath = await uploadDocx(file);
+      if (storagePath) {
+        await persistResume(text, storagePath);
+      }
+    } catch (err) {
+      console.error("DOCX upload failed:", err);
+    }
+    setDocxUploading(false);
+  };
+
+  const handleDownloadDocx = async () => {
+    if (!aiResult.json || !docxPath) return;
+    setDocxGenerating(true);
+    try {
+      const template = await downloadDocxTemplate(docxPath);
+      if (!template) { setDocxGenerating(false); return; }
+      const blob = generateTailoredDocx(template, aiResult.json);
+      const name = `Resume_${selected?.company || "Tailored"}_${selected?.role || "Role"}.docx`
+        .replace(/\s+/g, "_");
+      saveAs(blob, name);
+    } catch (err) {
+      console.error("DOCX generation failed:", err);
+    }
+    setDocxGenerating(false);
+  };
 
   const retryOllama = async () => {
     setOllamaStatus("checking");
@@ -249,14 +588,27 @@ export default function JobTracker() {
     await deleteAppById(id);
   };
 
-  const runAI = async action => {
+  const runAI = async (action, forceRegenerate = false) => {
     if (!selected) return;
     const actionDef = AI_ACTIONS.find(a => a.id === action);
     if (actionDef?.needsResume && !baseResume.trim()) {
-      setAiResult({ action, text: '⚠️  Please set your base resume first — click "My Resume" in the header.', loading: false });
+      setAiResult({ action, text: '⚠️  Please set your base resume first — click "My Resume" in the header.', json: null, loading: false });
       return;
     }
-    setAiResult({ action, text: "", loading: true });
+
+    // Check cache first
+    const cached = selected.ai_results?.[action];
+    if (cached && !forceRegenerate) {
+      setCopied(false);
+      if (action === "resume" && cached.json) {
+        setAiResult({ action, text: cached.text, json: cached.json, loading: false });
+      } else {
+        setAiResult({ action, text: cached.text, json: null, loading: false });
+      }
+      return;
+    }
+
+    setAiResult({ action, text: "", json: null, loading: true });
     setCopied(false);
     const context = [
       `Role: ${selected.role} at ${selected.company}`,
@@ -264,14 +616,30 @@ export default function JobTracker() {
       baseResume ? `Candidate Resume:\n${baseResume}` : "",
       selected.notes ? `Notes: ${selected.notes}` : "",
     ].filter(Boolean).join("\n\n---\n\n");
-    const maxTok = action === "resume" ? 2200 : 1200;
+    const maxTok = action === "resume" ? 3000 : 1200;
     try {
       const text = aiProvider === "ollama"
         ? await callOllama(ollamaModel, SYSTEM_PROMPTS[action], context)
         : await callClaude(SYSTEM_PROMPTS[action], context, maxTok);
-      setAiResult({ action, text, loading: false });
+
+      let result;
+      if (action === "resume") {
+        const json = parseResumeJson(text);
+        const display = json ? formatResumeJsonAsText(json) : text;
+        result = { action, text: display, json, loading: false };
+      } else {
+        result = { action, text, json: null, loading: false };
+      }
+      setAiResult(result);
+
+      // Persist to DB
+      const updatedResults = { ...(selected.ai_results || {}), [action]: { text: result.text, json: result.json } };
+      const updatedApp = { ...selected, ai_results: updatedResults };
+      setSelected(updatedApp);
+      setApps(prev => prev.map(a => a.id === selected.id ? updatedApp : a));
+      await updateApp(selected.id, { ai_results: updatedResults });
     } catch {
-      setAiResult({ action, text: "Error contacting AI. Please try again.", loading: false });
+      setAiResult({ action, text: "Error contacting AI. Please try again.", json: null, loading: false });
     }
   };
 
@@ -452,7 +820,7 @@ export default function JobTracker() {
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                       {col.items.map(app => (
                         <JobCard key={app.id} app={app} isSelected={selected?.id === app.id}
-                          onClick={() => { setSelected(app); setAiResult({ action: null, text: "", loading: false }); }} />
+                          onClick={() => { setSelected(app); setAiResult({ action: null, text: "", json: null, loading: false }); }} />
                       ))}
                       {col.items.length === 0 && (
                         <div style={{ border: "1px dashed #141720", borderRadius: 7, padding: "20px 10px", textAlign: "center", fontSize: 9, color: "#1a1e2a" }}>empty</div>
@@ -469,7 +837,7 @@ export default function JobTracker() {
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {filtered.length === 0 && <div style={{ textAlign: "center", padding: 48, color: "#2a2f3d", fontSize: 12 }}>No applications found.</div>}
               {filtered.map(app => (
-                <div key={app.id} className="card job-card" onClick={() => { setSelected(app); setAiResult({ action: null, text: "", loading: false }); }}
+                <div key={app.id} className="card job-card" onClick={() => { setSelected(app); setAiResult({ action: null, text: "", json: null, loading: false }); }}
                   style={{ padding: "10px 15px", display: "flex", alignItems: "center", gap: 14,
                     border: selected?.id === app.id ? "1px solid #e8c56a33" : "1px solid #1a1e2a" }}>
                   <div style={{ flex: 1 }}>
@@ -551,18 +919,20 @@ export default function JobTracker() {
                 {AI_ACTIONS.map(a => {
                   const isActive  = aiResult.action === a.id;
                   const locked    = a.needsResume && !resumeSet;
+                  const hasCached = !!selected.ai_results?.[a.id];
                   return (
                     <button key={a.id} className="ai-btn" onClick={() => !locked && runAI(a.id)}
-                      title={locked ? "Set your base resume first" : a.hint}
+                      title={locked ? "Set your base resume first" : hasCached ? "Cached — click to view" : a.hint}
                       style={{
-                        borderColor: isActive ? a.color + "66" : undefined,
+                        borderColor: isActive ? a.color + "66" : hasCached ? a.color + "22" : undefined,
                         background:  isActive ? "#0f1320" : undefined,
                         opacity:     locked ? 0.35 : 1,
                         cursor:      locked ? "not-allowed" : "pointer",
                       }}>
                       <div style={{ color: isActive ? a.color : "#8090a8", fontSize: 12, marginBottom: 3 }}>{a.label}</div>
                       <div style={{ fontSize: 9, color: "#2a2f3d", lineHeight: 1.5 }}>{a.hint}</div>
-                      {a.needsResume && <div style={{ fontSize: 8, color: "#2a3a28", marginTop: 2 }}>requires resume</div>}
+                      {a.needsResume && !hasCached && <div style={{ fontSize: 8, color: "#2a3a28", marginTop: 2 }}>requires resume</div>}
+                      {hasCached && <div style={{ fontSize: 8, color: a.color + "88", marginTop: 2 }}>cached — instant load</div>}
                       {isActive && <div style={{ position: "absolute", top: 7, right: 7, width: 5, height: 5, borderRadius: "50%", background: a.color, boxShadow: `0 0 6px ${a.color}` }} />}
                     </button>
                   );
@@ -578,7 +948,21 @@ export default function JobTracker() {
                     {activeAction?.label?.toUpperCase() || "OUTPUT"}
                   </span>
                   {!aiResult.loading && aiResult.text && (
-                    <button className="copy-btn" onClick={copyResult}>{copied ? "✓ COPIED" : "COPY"}</button>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button className="copy-btn" onClick={() => runAI(aiResult.action, true)}
+                        style={{ borderColor: "#f0b06044", color: "#f0b060" }}
+                        title="Re-run AI and overwrite cached result">
+                        REGENERATE
+                      </button>
+                      {aiResult.action === "resume" && aiResult.json && docxPath && (
+                        <button className="copy-btn" onClick={handleDownloadDocx}
+                          style={{ borderColor: "#5de8b844", color: docxGenerating ? "#2a2f3d" : "#5de8b8" }}
+                          disabled={docxGenerating}>
+                          {docxGenerating ? "GENERATING..." : "DOWNLOAD DOCX"}
+                        </button>
+                      )}
+                      <button className="copy-btn" onClick={copyResult}>{copied ? "✓ COPIED" : "COPY"}</button>
+                    </div>
                   )}
                 </div>
 
@@ -616,55 +1000,131 @@ export default function JobTracker() {
               <div>
                 <div style={{ fontFamily: "'Instrument Serif', serif", fontSize: 20, color: "#e8c56a", fontStyle: "italic" }}>My Base Resume</div>
                 <div style={{ fontSize: 11, color: "#3a4055", marginTop: 4, lineHeight: 1.6 }}>
-                  Paste your full resume below. The AI will tailor a variation for each job you apply to — your original is never modified.
+                  Upload a DOCX to preserve formatting, or paste plain text. The AI tailors a variation for each job — your original is never modified.
                 </div>
               </div>
               <button className="btn" onClick={() => setShowResumeModal(false)} style={{ color: "#2a2f3d", fontSize: 20, background: "none", marginLeft: 12 }}>×</button>
             </div>
 
-            {/* Tips */}
-            <div style={{ margin: "14px 0", padding: "10px 14px", background: "#0e150e", border: "1px solid #2a4a2a66", borderRadius: 6, fontSize: 11, color: "#6ec87e", lineHeight: 1.7 }}>
-              <strong>Tips for best AI output:</strong> Include your full work history with bullet points, key skills, education, and any relevant projects. The richer your base resume, the better the tailored output. Plain text works perfectly.
+            {/* Tab toggle */}
+            <div style={{ display: "flex", background: "#0f1118", border: "1px solid #1a1e2a", borderRadius: 6, overflow: "hidden", margin: "14px 0 10px" }}>
+              {[["docx", "UPLOAD DOCX"], ["text", "PASTE TEXT"]].map(([id, label]) => (
+                <button key={id} className="btn" onClick={() => setResumeTab(id)}
+                  style={{ flex: 1, padding: "7px", fontSize: 10, letterSpacing: 1.5,
+                    background: resumeTab === id ? "#1a1e2a" : "transparent",
+                    color: resumeTab === id ? "#e8c56a" : "#2a2f3d" }}>
+                  {label}
+                </button>
+              ))}
             </div>
 
-            <textarea className="inp" rows={20} value={resumeDraft} onChange={e => setResumeDraft(e.target.value)}
-              style={{ resize: "vertical", lineHeight: 1.7, fontSize: 12, fontFamily: "inherit" }}
-              placeholder={`JANE DOE
-jane@email.com  |  linkedin.com/in/janedoe  |  github.com/janedoe
+            {/* Version picker */}
+            {resumeVersions.length > 1 && (
+              <div style={{ marginBottom: 10 }}>
+                <span className="lbl">RESUME VERSIONS</span>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {resumeVersions.map(v => {
+                    const isActive = v.id === activeResumeId;
+                    const date = new Date(v.createdAt);
+                    const label = date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+                      + " " + date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+                    return (
+                      <div key={v.id} style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                        <button className="btn" onClick={() => switchResumeVersion(v.id)}
+                          style={{ padding: "4px 10px", fontSize: 10, borderRadius: "4px 0 0 4px",
+                            border: `1px solid ${isActive ? "#e8c56a66" : "#1a1e2a"}`, borderRight: "none",
+                            background: isActive ? "#1a1810" : "transparent",
+                            color: isActive ? "#e8c56a" : "#3a4055" }}>
+                          {label}{v.docxPath ? " (.docx)" : " (text)"}{isActive ? " ✓" : ""}
+                        </button>
+                        <button className="btn" onClick={(e) => { e.stopPropagation(); handleDeleteResume(v.id); }}
+                          title="Delete this version"
+                          style={{ padding: "4px 6px", fontSize: 10, borderRadius: "0 4px 4px 0",
+                            border: `1px solid ${isActive ? "#e8c56a66" : "#1a1e2a"}`,
+                            background: "transparent", color: "#4a2020" }}>
+                          ×
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
-SUMMARY
-Full-stack engineer with 5 years building scalable web applications...
+            {resumeTab === "docx" ? (
+              <>
+                {/* DOCX upload area */}
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  style={{ border: "2px dashed #1e2330", borderRadius: 8, padding: "32px 20px", textAlign: "center",
+                    cursor: "pointer", background: "#0a0c10", transition: "border-color 0.15s" }}
+                  onMouseOver={e => e.currentTarget.style.borderColor = "#e8c56a44"}
+                  onMouseOut={e => e.currentTarget.style.borderColor = "#1e2330"}>
+                  <input ref={fileInputRef} type="file" accept=".docx" onChange={handleDocxUpload}
+                    style={{ display: "none" }} />
+                  {docxUploading ? (
+                    <div style={{ color: "#f0b060", fontSize: 12 }}>Uploading & extracting text...</div>
+                  ) : docxPath ? (
+                    <div>
+                      <div style={{ fontSize: 13, color: "#5de8b8", marginBottom: 6 }}>base_resume.docx uploaded</div>
+                      <div style={{ fontSize: 10, color: "#2a2f3d" }}>Click to replace with a new file</div>
+                    </div>
+                  ) : (
+                    <div>
+                      <div style={{ fontSize: 13, color: "#5a6080", marginBottom: 6 }}>Click to upload your resume (.docx)</div>
+                      <div style={{ fontSize: 10, color: "#2a2f3d" }}>Your formatting will be preserved when generating tailored resumes</div>
+                    </div>
+                  )}
+                </div>
 
-EXPERIENCE
-Senior Software Engineer — Acme Corp  (Jan 2022 – Present)
-• Led migration of monolith to microservices, reducing latency by 40%
-• Mentored team of 4 junior engineers across 3 product lines
-• Shipped 12 features used by 500K+ monthly active users
+                {/* Extracted text preview */}
+                {(docxPreview || (docxPath && baseResume)) && (
+                  <div style={{ marginTop: 10 }}>
+                    <span className="lbl">EXTRACTED TEXT PREVIEW</span>
+                    <div className="ai-result" style={{ maxHeight: 300, fontSize: 11, lineHeight: 1.7 }}>
+                      {docxPreview || baseResume}
+                    </div>
+                  </div>
+                )}
 
-Software Engineer — Startup Inc  (Jun 2019 – Dec 2021)
-• Built real-time dashboard in React + Node.js from 0 to 50K users
-• Reduced CI/CD pipeline duration from 18 min to 4 min
+                <div style={{ margin: "10px 0", padding: "10px 14px", background: "#0e150e", border: "1px solid #2a4a2a66", borderRadius: 6, fontSize: 11, color: "#6ec87e", lineHeight: 1.7 }}>
+                  <strong>Why upload a DOCX?</strong> When the AI generates a tailored resume, it will inject the new content into your original file — same fonts, margins, bullet styles, and layout. You get a ready-to-submit DOCX download.
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Plain text tab (original) */}
+                <div style={{ margin: "4px 0 10px", padding: "10px 14px", background: "#0e150e", border: "1px solid #2a4a2a66", borderRadius: 6, fontSize: 11, color: "#6ec87e", lineHeight: 1.7 }}>
+                  <strong>Tips for best AI output:</strong> Include your full work history with bullet points, key skills, education, and any relevant projects. The richer your base resume, the better the tailored output.
+                </div>
 
-SKILLS
-Languages: TypeScript, Python, Go
-Frameworks: React, Next.js, Node.js, FastAPI
-Cloud: AWS (EC2, RDS, Lambda), Docker, Kubernetes
-
-EDUCATION
-B.Sc. Computer Science — State University, 2019`} />
+                <textarea className="inp" rows={20} value={resumeDraft} onChange={e => setResumeDraft(e.target.value)}
+                  style={{ resize: "vertical", lineHeight: 1.7, fontSize: 12, fontFamily: "inherit" }}
+                  placeholder={`JANE DOE\njane@email.com  |  linkedin.com/in/janedoe\n\nSUMMARY\nFull-stack engineer with 5 years building scalable web applications...\n\nEXPERIENCE\nSenior Software Engineer — Acme Corp  (Jan 2022 – Present)\n• Led migration of monolith to microservices, reducing latency by 40%\n• Mentored team of 4 junior engineers across 3 product lines\n\nSKILLS\nLanguages: TypeScript, Python, Go\nFrameworks: React, Next.js, Node.js\n\nEDUCATION\nB.Sc. Computer Science — State University, 2019`} />
+              </>
+            )}
 
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
               <div style={{ flex: 1, fontSize: 10, color: "#2a2f3d" }}>
-                {wordCount > 0 ? `${wordCount} words · ready to power AI tailoring` : "Paste your resume above"}
+                {docxPath && resumeTab === "docx"
+                  ? "DOCX template saved — AI will preserve your formatting"
+                  : wordCount > 0 ? `${wordCount} words · ready to power AI tailoring` : "Upload a DOCX or paste your resume"}
               </div>
               <button className="btn" onClick={() => setShowResumeModal(false)}
                 style={{ padding: "7px 16px", background: "none", border: "1px solid #1a1e2a", borderRadius: 6, color: "#4a5070", fontSize: 11 }}>
                 Cancel
               </button>
-              <button className="btn" onClick={() => { persistResume(resumeDraft); setShowResumeModal(false); }}
-                style={{ padding: "7px 20px", background: "#e8c56a", borderRadius: 6, color: "#0a0b0f", fontSize: 11, fontWeight: 500 }}>
-                Save Resume
-              </button>
+              {resumeTab === "text" ? (
+                <button className="btn" onClick={() => { persistResume(resumeDraft); setShowResumeModal(false); }}
+                  style={{ padding: "7px 20px", background: "#e8c56a", borderRadius: 6, color: "#0a0b0f", fontSize: 11, fontWeight: 500 }}>
+                  Save Resume
+                </button>
+              ) : (
+                <button className="btn" onClick={() => setShowResumeModal(false)}
+                  style={{ padding: "7px 20px", background: "#e8c56a", borderRadius: 6, color: "#0a0b0f", fontSize: 11, fontWeight: 500 }}>
+                  Done
+                </button>
+              )}
             </div>
           </div>
         </div>
