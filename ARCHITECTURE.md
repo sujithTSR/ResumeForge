@@ -6,57 +6,64 @@ Technical deep-dive into how JobTrack AI works under the hood. For a project ove
 
 - **Frontend:** React (no router, no component library)
 - **Build:** Vite + HMR
-- **Storage:** Supabase (PostgreSQL)
+- **Storage:** Supabase (PostgreSQL + Storage)
 - **AI:** Claude API (cloud) or Ollama (local, free) — switchable from the UI
-
-## Setup
-
-```bash
-npm install
-```
-
-Create a `.env` file in the project root (only needed for Claude mode):
-
-```
-VITE_ANTHROPIC_API_KEY=your-api-key-here
-```
-
-### Ollama Setup (optional, for free local AI)
-
-Install Ollama from [ollama.com](https://ollama.com), then pull the models you want:
-
-```bash
-ollama pull llama3.2        # fast, lightweight
-ollama pull mistral         # great for writing tasks
-ollama pull deepseek-r1:8b  # strong reasoning
-```
-
-> The app will auto-pull a model on first use if it's not installed, but pre-pulling avoids the wait.
-
-```bash
-npm run dev
-```
+- **DOCX:** mammoth (text extraction) + pizzip/docxtemplater (format-preserving generation)
 
 ## Architecture Overview
 
-Everything lives in a single file — `src/App.jsx` — state, API calls, storage, and UI. There is no backend server. The AI is **not** a persistent agent — it's a **one-shot API call** per user action, routed to either Claude (cloud) or Ollama (local) based on the user's toggle.
+Everything lives in a single file — `src/App.jsx` — state, API calls, storage, DOCX engine, and UI. There is no backend server. The AI is **not** a persistent agent — it's a **one-shot API call** per user action, routed to either Claude (cloud) or Ollama (local) based on the user's toggle. AI responses are cached per job in Supabase to avoid redundant calls.
+
+For setup instructions, see the [Setup Guide](SETUP.md).
 
 ## Data Model
 
-Each job application is a plain object stored in `localStorage` under `"job_tracker_apps"`:
+### `applications` table (Supabase)
 
-| Field     | Type   | Source                    |
-|-----------|--------|---------------------------|
-| `id`      | number | `Date.now()` at creation  |
-| `company` | string | user input                |
-| `role`    | string | user input                |
-| `url`     | string | user input (optional)     |
-| `status`  | string | one of 6 statuses         |
-| `notes`   | string | user input (optional)     |
-| `jd`      | string | job description (optional)|
-| `date`    | string | ISO date at creation      |
+| Field        | Type   | Source                    |
+|--------------|--------|---------------------------|
+| `id`         | bigint | `Date.now()` at creation  |
+| `company`    | text   | user input                |
+| `role`       | text   | user input                |
+| `url`        | text   | user input (optional)     |
+| `status`     | text   | one of 6 statuses         |
+| `notes`      | text   | user input (optional)     |
+| `jd`         | text   | job description (optional)|
+| `date`       | text   | ISO date at creation      |
+| `ai_results` | jsonb  | cached AI responses (see below) |
+| `created_at` | timestamptz | auto                 |
 
-The **base resume** is stored separately under `"job_tracker_resume"` as plain text.
+### `resumes` table (Supabase — versioned)
+
+Each save creates a **new row**, building a version history.
+
+| Field        | Type        | Description                          |
+|--------------|-------------|--------------------------------------|
+| `id`         | serial      | auto-increment PK                    |
+| `content`    | text        | extracted plain text (for AI context)|
+| `docx_path`  | text        | Supabase Storage path to .docx file  |
+| `created_at` | timestamptz | version timestamp                    |
+| `updated_at` | timestamptz | last update time                     |
+
+### `resumes` storage bucket (Supabase Storage)
+
+DOCX files are stored with versioned filenames: `base_resume_<timestamp>.docx`. Each resume version points to its own file.
+
+### `ai_results` JSONB structure
+
+Cached per job, keyed by action id:
+
+```json
+{
+  "resume": { "text": "formatted plain text", "json": { "summary": "...", "experience": [...], "skills": [...], "education": [...] } },
+  "cover":  { "text": "Dear Hiring Team...", "json": null },
+  "fit":    { "text": "Fit Score: 7/10...", "json": null },
+  "prep":   { "text": "Question 1:...", "json": null },
+  "email":  { "text": "Subject:...", "json": null }
+}
+```
+
+The `json` field is only populated for the `resume` action (structured output for DOCX generation). Other actions store plain text only.
 
 **Statuses:** Wishlist → Applied → Phone Screen → Interview → Offer → Rejected
 
@@ -64,8 +71,9 @@ The **base resume** is stored separately under `"job_tracker_resume"` as plain t
 
 ```
 main.jsx → renders <App /> → useEffect on mount
-  ├── loadApps()   → reads "job_tracker_apps" from localStorage
-  └── loadResume() → reads "job_tracker_resume" from localStorage
+  ├── loadApps()        → fetches applications from Supabase, ordered by created_at desc
+  └── loadAllResumes()  → fetches all resume versions from Supabase, ordered by created_at desc
+        └── selects latest version as active (sets baseResume, docxPath)
 ```
 
 ## User Workflows
@@ -75,8 +83,8 @@ main.jsx → renders <App /> → useEffect on mount
 ```
 "+ Add Job" button → modal opens → fill form → "Add Application"
   → validates company + role are present
-  → prepends new object to apps array
-  → saves to React state + localStorage
+  → optimistic update: prepends to React state immediately
+  → inserts row into Supabase applications table
   → modal closes, form resets
 ```
 
@@ -88,11 +96,33 @@ main.jsx → renders <App /> → useEffect on mount
 
 ### Updating Status
 
-Click a status button in the detail panel → updates the job in state + localStorage.
+Click a status button in the detail panel → optimistic state update → Supabase update.
 
 ### Setting Base Resume
 
-"My Resume" button in header → modal with textarea → paste resume → "Save Resume" → persisted to localStorage.
+"My Resume" button in header → modal with two tabs:
+
+**UPLOAD DOCX tab:**
+```
+User clicks upload area → selects .docx file
+  → mammoth.extractRawText() extracts plain text
+  → file uploaded to Supabase Storage (resumes bucket) with versioned filename
+  → new row inserted into resumes table (content + docx_path)
+  → version appears in version picker
+```
+
+**PASTE TEXT tab:**
+```
+User pastes resume text → clicks "Save Resume"
+  → new row inserted into resumes table (content only, no docx_path)
+  → version appears in version picker
+```
+
+### Resume Versioning
+
+Every save (text or DOCX) creates a new row in the `resumes` table. The resume modal shows a version picker with timestamps when 2+ versions exist. Users can:
+- Switch between versions (instantly loads that version's content and DOCX template)
+- Delete any version (removes the DB row + DOCX file from Storage)
 
 ## AI Provider Toggle
 
@@ -135,18 +165,21 @@ There are **5 AI actions**, each triggered by a button in the detail panel of a 
 
 | Action          | ID       | Needs Resume? | Max Tokens (Claude) |
 |-----------------|----------|---------------|---------------------|
-| Tailored Resume | `resume` | Yes           | 2200                |
+| Tailored Resume | `resume` | Yes           | 3000                |
 | Cover Letter    | `cover`  | Yes           | 1200                |
 | Fit Analysis    | `fit`    | No            | 1200                |
 | Interview Prep  | `prep`   | No            | 1200                |
 | Follow-up Email | `email`  | No            | 1200                |
 
-### `runAI(action)` — what happens when you click an AI button
+### `runAI(action, forceRegenerate)` — what happens when you click an AI button
 
 ```
 User selects a job → clicks an AI action button
   │
   ├── Guard: if action needs resume and none is set → shows warning, returns
+  │
+  ├── Check cache: selected.ai_results[action]
+  │     If cached AND not forceRegenerate → load from cache instantly, return
   │
   ├── Sets loading state (triggers shimmer animation)
   │
@@ -159,7 +192,15 @@ User selects a job → clicks an AI action button
   │
   ├── if provider == "claude"  → callClaude(systemPrompt, context, maxTokens)
   └── if provider == "ollama"  → callOllama(ollamaModel, systemPrompt, context)
+        │
+        ├── if action == "resume" → parseResumeJson(text)
+        │     Extracts JSON from response (handles markdown fences, preamble)
+        │     Formats as plain text for display via formatResumeJsonAsText()
+        │
+        └── Persist result to Supabase: updateApp(id, { ai_results: { ...existing, [action]: { text, json } } })
 ```
+
+The **REGENERATE** button calls `runAI(action, true)` to bypass the cache and make a fresh API call, overwriting the stored result.
 
 ### `callClaude()` — Anthropic cloud path
 
@@ -219,45 +260,76 @@ callOllama(model, systemPrompt, userPrompt)
 
 ### The 5 System Prompts
 
-The same system prompts are used for both Claude and Ollama. Each gives the AI a distinct persona and strict output format:
+The same system prompts are used for both Claude and Ollama. All prompts include **ATS rules** (no tables, keyword mirroring, standard headings) and **human-tone rules** (banned AI phrases like "leverage", "utilize", "synergy"; varied sentence structure).
 
-1. **`resume`** — "elite resume strategist with ATS expertise." Never invents experience, reorders for relevance, uses JD keywords, quantifies impact, outputs plain text.
-2. **`cover`** — "master cover letter writer." Strict 4-paragraph structure (Hook → Fit → Value-add → Close), ~260 words.
-3. **`fit`** — "senior recruiter." Outputs Fit Score /10, Top 3 Strengths, Top 3 Gaps with actions. Brutally honest.
-4. **`prep`** — "expert interview coach." 5 questions with STAR-framework answer guides.
-5. **`email`** — "career coach." 3–4 sentence follow-up email.
+1. **`resume`** — "elite resume strategist with ATS and human-readability expertise." Outputs **structured JSON** (`{ summary, experience, skills, education }`). Never invents experience, mirrors JD keywords, quantifies impact.
+2. **`cover`** — "master cover letter writer." Strict 4-paragraph structure (Hook → Fit → Value-add → Close), ~260 words. Must mirror 3–5 JD phrases naturally.
+3. **`fit`** — "senior recruiter who has screened 10,000+ resumes." Fit Score /10, Top 3 Strengths, Top 3 Gaps with actions, ATS Risk Flags. Brutally honest.
+4. **`prep`** — "expert interview coach who has conducted 5,000+ interviews." 5 questions (behavioral + technical + culture-fit) with STAR answer guides and common mistakes.
+5. **`email`** — "career coach." 3–4 sentence follow-up. Bans generic openers like "I hope this finds you well."
 
 ### After the API returns
 
-- **Success** → response text rendered in the detail panel's output box. A "COPY" button copies it to clipboard.
+- **Success** → response text rendered in the detail panel's output box
+  - **COPY** button copies text to clipboard
+  - **REGENERATE** button forces a fresh AI call (bypasses cache)
+  - **DOWNLOAD DOCX** button (resume action only, when DOCX template exists) generates a tailored .docx file
+- **Result is cached** in `applications.ai_results` — subsequent clicks load instantly
 - **Error** → shows "Error contacting AI. Please try again."
+
+### DOCX Generation Flow
+
+When the user clicks **DOWNLOAD DOCX** after running a resume action:
+
+```
+handleDownloadDocx()
+  │
+  ├── downloadDocxTemplate(docxPath)
+  │     Downloads the original .docx from Supabase Storage
+  │
+  ├── generateTailoredDocx(templateBuffer, resumeJson)
+  │     1. Opens .docx as ZIP via PizZip
+  │     2. Parses word/document.xml
+  │     3. Identifies sections by heading styles or bold paragraphs
+  │     4. Maps AI JSON sections to document sections:
+  │        SUMMARY → summary, EXPERIENCE → experience[], SKILLS → skills[], EDUCATION → education[]
+  │     5. Replaces content paragraph-by-paragraph, preserving:
+  │        - Run properties (fonts, sizes, colors, bold/italic)
+  │        - Paragraph properties (spacing, indentation, alignment)
+  │        - Document properties (margins, page size, headers/footers)
+  │     6. Serializes modified XML back into the ZIP
+  │     7. Returns as Blob
+  │
+  └── saveAs(blob, "Resume_Company_Role.docx")
+        Triggers browser download via file-saver
+```
 
 ## Data Flow Diagram
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      localStorage                        │
-│  job_tracker_apps  job_tracker_resume                    │
-│  job_tracker_provider  job_tracker_ollama_model          │
-└──────────┬──────────────────────┬────────────────────────┘
-           │ load on mount        │ load on mount
-           ▼                      ▼
-┌──────────────────────────────────────────────────────────┐
-│               React State (JobTracker)                    │
-│  apps[]  baseResume  selected  aiResult  form            │
-│  aiProvider  ollamaModel  ollamaStatus                   │
-└────┬──────────┬──────────────────┬───────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                         Supabase                              │
+│  applications table    resumes table    resumes storage bucket│
+│  (jobs + ai_results)   (versioned)      (.docx files)        │
+└──────┬──────────────────────┬──────────────────┬─────────────┘
+       │ load on mount        │ load on mount    │ download
+       ▼                      ▼                  │ on demand
+┌──────────────────────────────────────────────────────────────┐
+│                  React State (JobTracker)                      │
+│  apps[]  baseResume  resumeVersions[]  activeResumeId        │
+│  selected  aiResult { text, json }  docxPath                 │
+│  aiProvider  ollamaModel  ollamaStatus                       │
+└────┬──────────┬──────────────────┬───────────────────────────┘
      │          │                  │
      │          │         User clicks AI action
      │          │                  │
      │          │                  ▼
-     │          │        ┌─────────────────┐
-     │          │        │    runAI()       │
-     │          │        │  builds context  │
-     │          │        │  from selected   │
-     │          │        │  job + resume    │
-     │          │        └────────┬────────┘
-     │          │                 │
+     │          │        ┌──────────────────┐
+     │          │        │    runAI()        │
+     │          │        │  check cache     │──→ cached? → instant load
+     │          │        │  build context    │
+     │          │        └────────┬─────────┘
+     │          │                 │ (cache miss or regenerate)
      │          │        ┌───────┴────────┐
      │          │        ▼                ▼
      │          │  ┌───────────┐   ┌──────────────┐
@@ -270,18 +342,38 @@ The same system prompts are used for both Claude and Ollama. Each gives the AI a
      │          │        │    Anthropic   │ localhost
      │          │        │    API         │ :11434
      │          │        └───────┬────────┘
+     │          │                │
+     │          │                ├── save to ai_results (Supabase)
      │          │                ▼
-     │          │         aiResult.text
+     │          │         aiResult.text + json
      │          │         rendered in UI
+     │          │                │
+     │          │                ├── [COPY] → clipboard
+     │          │                ├── [REGENERATE] → runAI(action, true)
+     │          │                └── [DOWNLOAD DOCX] (resume only)
+     │          │                       │
+     │          │                       ├── download base .docx ◄─┐
+     │          │                       ├── generateTailoredDocx() │ Supabase
+     │          │                       └── saveAs() → browser    │ Storage
      ▼          ▼
   Board/List   Resume Modal
-    Views       (edit & save)
+    Views       (upload docx / paste text / version picker)
 ```
+
+### localStorage (still used for)
+
+| Key | Value |
+|-----|-------|
+| `job_tracker_provider` | `"claude"` or `"ollama"` |
+| `job_tracker_ollama_model` | e.g. `"llama3.2"` |
+
+Only AI provider preferences are in localStorage. All application data is in Supabase.
 
 ## What This App Is NOT
 
-- **Not an agent loop** — the AI (Claude or Ollama) is called once per button click, returns text, done. No tool use, no memory, no multi-turn conversation.
-- **Not a backend app** — everything runs in the browser. No server, no database, no auth. Ollama runs as a separate local process, not as part of this app.
+- **Not an agent loop** — the AI (Claude or Ollama) is called once per button click, returns text, done. No tool use, no multi-turn conversation. Results are cached in Supabase for reuse.
+- **Not a backend app** — everything runs in the browser. Supabase handles persistence, Ollama runs as a separate local process.
 - **Not using the Anthropic SDK** — it's raw `fetch()` calls to the REST APIs (Anthropic or Ollama).
+- **Not using a DOCX templating language** — the DOCX engine does direct XML manipulation on the original file, no `{placeholder}` tags needed.
 
-It's a **CRUD app with AI-powered text generation** bolted onto the detail view of each job application.
+It's a **CRUD app with AI-powered text generation and DOCX processing** bolted onto the detail view of each job application.
