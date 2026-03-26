@@ -826,10 +826,17 @@ export default function JobTracker() {
       {/* ── HEADER ── */}
       <div style={{ borderBottom: "1px solid #141825", padding: "14px 22px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
         background: "linear-gradient(180deg, #0e1019 0%, #0a0c12 100%)" }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-          <span style={{ fontFamily: "'Instrument Serif', serif", fontSize: 23, color: "#f5dfa0", fontStyle: "italic",
-            textShadow: "0 0 24px rgba(245,223,160,0.3), 0 1px 2px rgba(0,0,0,0.5)" }}>JobTrack</span>
-          <span style={{ fontSize: 9, color: "#505878", letterSpacing: 3, fontWeight: 600 }}>AI WORKFLOW</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+            <span style={{ fontFamily: "'Instrument Serif', serif", fontSize: 24, color: "#ffffff", fontStyle: "italic",
+              textShadow: "0 1px 2px rgba(0,0,0,0.5)" }}>Resume</span>
+            <span style={{ fontFamily: "'Instrument Serif', serif", fontSize: 24, fontStyle: "italic",
+              background: "linear-gradient(135deg, #f5dfa0 0%, #e8a840 100%)",
+              WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+              filter: "drop-shadow(0 0 12px rgba(232,168,64,0.35))" }}>Forge</span>
+          </div>
+          <div style={{ height: 16, width: 1, background: "#252a3a" }} />
+          <span style={{ fontSize: 8, color: "#505878", letterSpacing: 3.5, fontWeight: 600, marginTop: 1 }}>AI-POWERED</span>
         </div>
 
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
